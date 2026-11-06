@@ -9,9 +9,12 @@ Rodar a partir da raiz do repositório:
     python3 -m unittest discover -s scripts -p "teste_*.py" -v
 """
 
+import io
 import json
 import tempfile
 import unittest
+import urllib.error
+from unittest import mock
 from datetime import datetime
 from pathlib import Path
 
@@ -125,8 +128,67 @@ class TesteResposta(unittest.TestCase):
     def test_consulta_tem_area_do_estado(self):
         consulta = g.consulta_overpass("PE", "borracharias")
         self.assertIn('area["ISO3166-2"="BR-PE"]->.uf;', consulta)
+        self.assertIn(".uf out ids;", consulta)
         self.assertIn('nwr["shop"="tyres"](area.uf);', consulta)
         self.assertIn('["name"~"borrach",i](area.uf);', consulta)
+
+
+class TesteServidor(unittest.TestCase):
+    """O download, com a internet trocada por respostas falsas."""
+
+    AREA = {"type": "area", "id": 3600000001}
+
+    def test_problema_na_resposta(self):
+        ok = {"elements": [self.AREA]}
+        self.assertIsNone(g.problema_na_resposta(ok))
+        self.assertIn("área", g.problema_na_resposta({"elements": []}))
+        self.assertIn("metade", g.problema_na_resposta(
+            {"remark": "runtime error: Query timed out", "elements": [self.AREA]}))
+        self.assertIsNotNone(g.problema_na_resposta([]))
+
+    @staticmethod
+    def resposta(dados):
+        """Uma resposta HTTP falsa, que funciona no "with urlopen(...)"."""
+        r = io.BytesIO(json.dumps(dados).encode("utf-8"))
+        return mock.MagicMock(__enter__=lambda *a: r, __exit__=lambda *a: False)
+
+    def test_502_e_sem_area_passam_para_o_proximo_servidor(self):
+        boa = {"elements": [self.AREA, {"type": "node", "id": 1, "lat": 1.0,
+                                        "lon": 2.0, "tags": {"amenity": "fuel"}}]}
+        chamadas = [
+            urllib.error.HTTPError(g.SERVIDORES[0], 502, "Bad Gateway", None, None),
+            self.resposta({"elements": []}),   # espelho sem a área do estado
+            self.resposta(boa),                # terceiro servidor responde certo
+        ]
+
+        def urlopen_falso(pedido, timeout):
+            item = chamadas.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        with mock.patch.object(g, "esperar_vaga"), \
+                mock.patch.object(g.urllib.request, "urlopen", urlopen_falso):
+            self.assertEqual(g.baixar_overpass("consulta"), boa)
+        self.assertEqual(chamadas, [])
+
+    def test_esperar_vaga_usa_o_tempo_do_servidor(self):
+        texto = b"Rate limit: 2\nSlot available after: 2026-11-06T19:00:12Z, in 7 seconds.\n"
+        resposta = mock.MagicMock(__enter__=lambda *a: io.BytesIO(texto),
+                                  __exit__=lambda *a: False)
+        with mock.patch.object(g.urllib.request, "urlopen", return_value=resposta), \
+                mock.patch.object(g.time, "sleep") as dormir:
+            g.esperar_vaga(g.SERVIDORES[0])
+        dormir.assert_called_once_with(8)
+
+    def test_esperar_vaga_com_vaga_livre_nao_espera(self):
+        texto = b"Rate limit: 2\n2 slots available now.\n"
+        resposta = mock.MagicMock(__enter__=lambda *a: io.BytesIO(texto),
+                                  __exit__=lambda *a: False)
+        with mock.patch.object(g.urllib.request, "urlopen", return_value=resposta), \
+                mock.patch.object(g.time, "sleep") as dormir:
+            g.esperar_vaga(g.SERVIDORES[0])
+        dormir.assert_not_called()
 
 
 class TesteArquivo(unittest.TestCase):

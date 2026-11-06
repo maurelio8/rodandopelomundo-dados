@@ -136,6 +136,9 @@ def atualizar(raiz: Path = RAIZ, agora: datetime | None = None) -> bool:
         anterior = json.loads(caminho.read_text(encoding="utf-8")).get("arquivos", {})
 
     arquivos = montar_arquivos(raiz, anterior, agora)
+    if not arquivos and not anterior:
+        print("indice.json: ainda não há nenhum arquivo em camadas/ ou eventos/.")
+        return False
     if arquivos == anterior:
         print("indice.json: nada mudou.")
         return False

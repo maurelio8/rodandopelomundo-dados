@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import signal
 import sys
 import time
 import urllib.error
@@ -59,10 +60,13 @@ UFS = [
     "SP", "SE", "TO",
 ]
 
-# Os servidores, na mesma ordem do app: o principal e um espelho.
+# Os servidores, em ordem: os dois que o app usa e um terceiro de reserva.
+# O maps.mail.ru cobre o mundo todo e costuma ficar só cerca de 1 minuto
+# atrás do OpenStreetMap ao vivo. Todos são públicos e comunitários.
 SERVIDORES = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ]
 
 # Como o script se apresenta ao servidor (a regra de uso justo pede um nome
@@ -73,15 +77,21 @@ IDENTIFICACAO = (
 )
 
 # Quanto tempo o SERVIDOR pode gastar numa consulta (segundos). É pedido
-# dentro da própria consulta ([timeout:300]).
-TEMPO_SERVIDOR = 300
+# dentro da própria consulta ([timeout:180]). Uma camada de um estado leva
+# segundos; 3 minutos já é sinal de servidor travado.
+TEMPO_SERVIDOR = 180
 # Quanto tempo o script espera a resposta chegar (um pouco mais que o acima).
 TEMPO_HTTP = TEMPO_SERVIDOR + 30
-# Pausa entre uma consulta e outra, por educação com o servidor público.
-PAUSA_ENTRE_CONSULTAS = 5
+# Pausa mínima entre uma consulta e outra. O overpass-api.de dá a cada
+# endereço de internet 2 "vagas" e cerca de 2 consultas por minuto; além
+# desta pausa, o script pergunta ao servidor se há vaga antes de cada
+# consulta (esperar_vaga).
+PAUSA_ENTRE_CONSULTAS = 10
 # Quantas voltas pelos servidores antes de desistir, e a espera entre elas.
-VOLTAS = 3
+VOLTAS = 2
 ESPERA_ENTRE_VOLTAS = 60
+# A espera máxima por uma vaga (se o servidor pedir mais, tenta assim mesmo).
+ESPERA_MAXIMA_VAGA = 120
 
 # A TRAVA contra resposta pela metade: se uma camada vier com mais de 30% a
 # menos do que na versão anterior, o estado não é gravado (a não ser com
@@ -267,8 +277,11 @@ def consulta_overpass(uf: str, camada: str) -> str:
     camada de UM estado.
 
     Linha a linha:
-      [out:json][timeout:300]    resposta em JSON; o servidor desiste em 300 s
+      [out:json][timeout:180]    resposta em JSON; o servidor desiste em 180 s
       area["ISO3166-2"="BR-PE"]  a área do estado, guardada no nome .uf
+      .uf out ids;               devolve também a própria área: é a prova de
+                                 que o servidor achou o estado (ver
+                                 problema_na_resposta)
       ( ... (area.uf); )         os filtros da camada, só dentro do estado
       out center tags qt;        etiquetas e, das áreas, o ponto central
                                  (é onde o ícone fica); qt = ordem mais rápida
@@ -277,24 +290,84 @@ def consulta_overpass(uf: str, camada: str) -> str:
     return (
         f"[out:json][timeout:{TEMPO_SERVIDOR}];\n"
         f'area["ISO3166-2"="BR-{uf}"]->.uf;\n'
+        ".uf out ids;\n"
         f"(\n{filtros}\n);\n"
         "out center tags qt;"
     )
 
 
+def problema_na_resposta(dados: object) -> str | None:
+    """Confere se a resposta do servidor serve. Devolve o problema em texto,
+    ou None se estiver tudo certo.
+
+    1) Aviso de erro no meio (o "remark", como "runtime error: Query timed
+       out"): a resposta veio PELA METADE.
+    2) Sem a área do estado na resposta: o servidor não achou o estado
+       (alguns espelhos não têm as áreas montadas). Sem essa conferência, a
+       camada viria VAZIA sem erro nenhum, e o estado ficaria sem pedágios,
+       por exemplo, sem ninguém perceber.
+    Nos dois casos o script tenta o próximo servidor."""
+    if not isinstance(dados, dict) or not isinstance(dados.get("elements"), list):
+        return "resposta sem a lista de lugares"
+    aviso = dados.get("remark")
+    if isinstance(aviso, str) and "error" in aviso.lower():
+        return f"resposta pela metade ({aviso.strip()})"
+    if not any(e.get("type") == "area" for e in dados["elements"]
+               if isinstance(e, dict)):
+        return "o servidor não achou a área do estado"
+    return None
+
+
+def esperar_vaga(endereco: str) -> None:
+    """Antes de cada consulta, pergunta ao servidor se há vaga para o nosso
+    endereço de internet (a página /api/status, que todo servidor Overpass
+    padrão tem) e espera o tempo que ele disser.
+
+    A página responde, por exemplo:
+        "2 slots available now."                     → pode ir
+        "Slot available after: ..., in 7 seconds."   → espera 7 s
+    Se a página não existir ou falhar, segue sem esperar (a pausa mínima e
+    as novas tentativas cuidam do resto)."""
+    status = endereco.replace("/interpreter", "/status")
+    try:
+        pedido = urllib.request.Request(status, headers={"User-Agent": IDENTIFICACAO})
+        with urllib.request.urlopen(pedido, timeout=15) as r:
+            texto_status = r.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return
+    if "available now" in texto_status:
+        return
+    esperas = [int(n) for n in re.findall(r"in (\d+) seconds?", texto_status)]
+    if esperas:
+        segundos = min(min(esperas) + 1, ESPERA_MAXIMA_VAGA)
+        print(f"      esperando vaga no servidor ({segundos} s)", flush=True)
+        time.sleep(segundos)
+
+
 def baixar_overpass(consulta: str) -> dict:
     """Manda a consulta ao Overpass e devolve a resposta já lida (dict).
 
-    Tenta o servidor principal e, se falhar, o espelho. Se os dois falharem,
-    espera [ESPERA_ENTRE_VOLTAS] segundos e dá outra volta, até [VOLTAS]
-    voltas. Desistiu: lança RuntimeError com o último erro.
+    Para cada servidor da lista: espera vaga (esperar_vaga), pergunta e
+    confere a resposta (problema_na_resposta). Se falhar, passa para o
+    próximo. Se todos falharem, espera [ESPERA_ENTRE_VOLTAS] segundos e dá
+    outra volta, até [VOLTAS] voltas. Desistiu: lança RuntimeError com o
+    último erro.
+
+    Mostra na tela qual servidor está sendo consultado e quanto tempo levou:
+    uma consulta pode levar alguns minutos, e sem esse aviso o script parece
+    travado.
 
     O envio é um POST de formulário com a consulta no campo "data" (o mesmo
     formato que o app usa)."""
     corpo = urllib.parse.urlencode({"data": consulta}).encode("utf-8")
-    ultimo_erro: object = "nenhum servidor"
+    ultimo_erro = "nenhum servidor"
     for volta in range(1, VOLTAS + 1):
         for endereco in SERVIDORES:
+            servidor = urllib.parse.urlparse(endereco).hostname
+            esperar_vaga(endereco)
+            print(f"      perguntando a {servidor} (pode levar até "
+                  f"{TEMPO_HTTP // 60} min)…", flush=True)
+            inicio = time.monotonic()
             pedido = urllib.request.Request(
                 endereco,
                 data=corpo,
@@ -305,18 +378,25 @@ def baixar_overpass(consulta: str) -> dict:
             )
             try:
                 with urllib.request.urlopen(pedido, timeout=TEMPO_HTTP) as r:
-                    return json.loads(r.read().decode("utf-8"))
+                    dados = json.loads(r.read().decode("utf-8"))
+                problema = problema_na_resposta(dados)
+                if problema is None:
+                    print(f"      respondeu em {time.monotonic() - inicio:.0f} s",
+                          flush=True)
+                    return dados
+                ultimo_erro = f"{problema} em {servidor}"
             except urllib.error.HTTPError as erro:
-                # 429 = muitos pedidos; 504 = servidor ocupado.
-                ultimo_erro = f"HTTP {erro.code} em {endereco}"
+                # 429 = muitos pedidos; 502, 503 e 504 = servidor
+                # sobrecarregado, quase sempre passageiro.
+                ultimo_erro = f"HTTP {erro.code} em {servidor}"
             except (urllib.error.URLError, TimeoutError, OSError) as erro:
-                ultimo_erro = f"{erro} em {endereco}"
+                ultimo_erro = f"{erro} em {servidor}"
             except json.JSONDecodeError:
-                ultimo_erro = f"resposta que não é JSON em {endereco}"
+                ultimo_erro = f"resposta que não é JSON em {servidor}"
             print(f"      falhou ({ultimo_erro})", flush=True)
         if volta < VOLTAS:
-            print(f"      esperando {ESPERA_ENTRE_VOLTAS} s para tentar de novo",
-                  flush=True)
+            print(f"      todos falharam; esperando {ESPERA_ENTRE_VOLTAS} s para "
+                  "tentar de novo", flush=True)
             time.sleep(ESPERA_ENTRE_VOLTAS)
     raise RuntimeError(f"Overpass indisponível: {ultimo_erro}")
 
@@ -533,6 +613,17 @@ def gerar_uf(
     return True
 
 
+class PedidoParaParar(Exception):
+    """Lançada quando o script recebe o sinal SIGTERM (o "Terminado" do
+    terminal): o sistema, outro programa ou o GitHub pedindo para parar."""
+
+
+def _ao_pedirem_para_parar(numero_sinal, quadro) -> None:
+    """Chamada pelo Python quando chega o SIGTERM. Vira uma exceção, que o
+    principal() pega para explicar o que aconteceu antes de sair."""
+    raise PedidoParaParar()
+
+
 def principal(argumentos: list[str] | None = None) -> int:
     """Lê a linha de comando e gera os estados pedidos. Devolve o código de
     saída: 0 = tudo certo; 1 = algum estado falhou (os outros foram
@@ -552,12 +643,25 @@ def principal(argumentos: list[str] | None = None) -> int:
         leitor.error(f"estados inválidos: {invalidas}" if invalidas
                      else "diga os estados (ex.: PE) ou use --todos")
 
+    # Se alguém (ou o sistema) mandar o script parar, avisa direito em vez de
+    # sumir com "Terminado". Os estados já gravados continuam inteiros: a
+    # gravação é segura (gravar) e o estado em andamento simplesmente não
+    # é gravado.
+    signal.signal(signal.SIGTERM, _ao_pedirem_para_parar)
+
     falharam = []
-    for i, uf in enumerate(ufs):
-        if i > 0:
-            time.sleep(PAUSA_ENTRE_CONSULTAS)
-        if not gerar_uf(uf, forcar=args.forcar):
-            falharam.append(uf)
+    try:
+        for i, uf in enumerate(ufs):
+            if i > 0:
+                time.sleep(PAUSA_ENTRE_CONSULTAS)
+            if not gerar_uf(uf, forcar=args.forcar):
+                falharam.append(uf)
+    except (KeyboardInterrupt, PedidoParaParar) as motivo:
+        origem = ("Ctrl+C" if isinstance(motivo, KeyboardInterrupt)
+                  else "um pedido de fora para parar (sinal SIGTERM)")
+        print(f"\n\nInterrompido por {origem}. O estado em andamento não foi "
+              "gravado; os anteriores continuam como estavam.")
+        return 130
 
     print()
     if falharam:
