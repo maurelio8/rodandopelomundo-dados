@@ -1,0 +1,7 @@
+# Lixo do Python
+__pycache__/
+*.pyc
+.venv/
+
+# Arquivos temporários dos scripts (gravação segura)
+*.json.tmp
