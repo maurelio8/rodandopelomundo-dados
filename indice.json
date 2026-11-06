@@ -1,0 +1,17 @@
+{
+  "formato": 1,
+  "gerado_em": "2026-11-06T16:26:19-03:00",
+  "arquivos": {
+    "camadas/PE.json": {
+      "versao": 202611061626,
+      "bytes": 140991,
+      "sha256": "a71539ef52ae0b3f7010f9887dcf292e1045cad5db6a6eafce2fe78f0391c75a",
+      "bbox": [
+        -9.432,
+        -41.009,
+        -3.833,
+        -32.398
+      ]
+    }
+  }
+}
