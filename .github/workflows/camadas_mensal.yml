@@ -1,0 +1,102 @@
+# .github/workflows/camadas_mensal.yml
+#
+# A TAREFA MENSAL das camadas do mapa (GitHub Actions).
+#
+# No dia 1 de cada mês, um computador do próprio GitHub (Ubuntu) baixa este
+# repositório, roda os testes, gera os 27 estados com o
+# scripts/gerar_camadas.py, atualiza o indice.json e, se algo mudou, faz o
+# commit e o push sozinho. O GitHub Pages publica em seguida, como quando o
+# push vem do seu computador.
+#
+# Também dá para rodar na hora, pelo botão "Run workflow" na aba Actions,
+# escolhendo só alguns estados (para refazer os que falharam, por exemplo).
+#
+# Se algum estado falhar, os que deram certo são publicados assim mesmo, os
+# que falharam continuam com a versão anterior, e a tarefa termina marcada
+# como falha: o GitHub manda um e-mail avisando.
+#
+# Custo: nenhum. Repositório público usa o GitHub Actions de graça.
+
+name: Camadas mensais
+
+on:
+  schedule:
+    # Dia 1 de cada mês, às 09:17 UTC (06:17 em Brasília). O minuto
+    # "quebrado" foge da hora cheia, quando o GitHub atrasa mais as
+    # tarefas agendadas.
+    - cron: "17 9 1 * *"
+  workflow_dispatch:
+    inputs:
+      estados:
+        description: "Siglas separadas por espaço (ex.: BA SP). Vazio = os 27."
+        required: false
+        default: ""
+      forcar:
+        description: "Gravar mesmo se a trava apontar queda grande"
+        type: boolean
+        default: false
+
+# O que a tarefa pode fazer no repositório: escrever (para o commit).
+permissions:
+  contents: write
+
+# Nunca duas rodadas ao mesmo tempo (uma agendada e outra pelo botão, por
+# exemplo): a segunda espera a primeira terminar.
+concurrency:
+  group: camadas
+  cancel-in-progress: false
+
+jobs:
+  camadas:
+    runs-on: ubuntu-latest
+    # Os 27 estados levam por volta de 2 horas (o script espera a vaga no
+    # servidor entre as consultas). 5 horas é a folga antes de desistir.
+    timeout-minutes: 300
+    steps:
+      - name: Baixar o repositório
+        uses: actions/checkout@v6
+
+      # O Python já vem no Ubuntu do GitHub, e os scripts só usam a
+      # biblioteca padrão: não precisa instalar nada.
+      - name: Testes dos scripts
+        run: python3 -m unittest discover -s scripts -p "teste_*.py"
+
+      # continue-on-error: mesmo que algum estado falhe (código de saída 1),
+      # a tarefa segue para publicar os que deram certo. O aviso de falha
+      # fica para o último passo.
+      - name: Gerar as camadas
+        id: gerar
+        continue-on-error: true
+        env:
+          ESTADOS: ${{ inputs.estados }}
+          FORCAR: ${{ inputs.forcar }}
+        run: |
+          if [ -z "$ESTADOS" ]; then ALVO="--todos"; else ALVO="$ESTADOS"; fi
+          EXTRA=""
+          if [ "$FORCAR" = "true" ]; then EXTRA="--forcar"; fi
+          python3 scripts/gerar_camadas.py $ALVO $EXTRA
+
+      - name: Atualizar o índice
+        run: python3 scripts/atualizar_indice.py
+
+      # Só faz commit se algum arquivo mudou. O "git pull --rebase" antes do
+      # push junta com algo que você tenha subido enquanto a tarefa rodava
+      # (a agenda de eventos, por exemplo).
+      - name: Publicar
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add camadas/ indice.json
+          if git diff --cached --quiet; then
+            echo "Nada mudou: nada para publicar."
+            exit 0
+          fi
+          git commit -m "Camadas: atualização automática de $(TZ=America/Sao_Paulo date +%d/%m/%Y)"
+          git pull --rebase
+          git push
+
+      - name: Avisar se algum estado falhou
+        if: steps.gerar.outcome == 'failure'
+        run: |
+          echo "::error::Algum estado falhou (veja o passo 'Gerar as camadas'). Os outros foram publicados; os que falharam continuam com a versão anterior."
+          exit 1

@@ -62,7 +62,8 @@ o campo não existe.
 
 ## Atualização
 
-Uma vez por mês. Viu um posto que fechou, uma lombada que não existe ou uma
+Uma vez por mês, no dia 1, automaticamente (`.github/workflows/camadas_mensal.yml`,
+no GitHub Actions). Viu um posto que fechou, uma lombada que não existe ou uma
 borracharia faltando? Corrija direto no
 [OpenStreetMap](https://www.openstreetmap.org): a correção entra aqui na
 atualização seguinte.
