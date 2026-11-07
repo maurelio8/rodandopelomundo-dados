@@ -1,6 +1,6 @@
 {
   "formato": 1,
-  "gerado_em": "2026-11-07T06:22:01-03:00",
+  "gerado_em": "2026-11-07T07:47:28-03:00",
   "arquivos": {
     "camadas/AC.json": {
       "versao": 202611062124,
@@ -80,9 +80,9 @@
       ]
     },
     "camadas/ES.json": {
-      "versao": 202611070622,
-      "bytes": 196822,
-      "sha256": "3d6ece153354c92bb73c454e85f3f85947c3ec2a9284d56ddd98ca70cb1ede7d",
+      "versao": 202611070747,
+      "bytes": 196611,
+      "sha256": "c07280db401021d6d779aff681788bb5358f5577798db4788805641ed3868bf9",
       "bbox": [
         -21.206,
         -41.85,
@@ -201,9 +201,9 @@
       ]
     },
     "camadas/RJ.json": {
-      "versao": 202611070526,
-      "bytes": 757259,
-      "sha256": "3c9c1690ba7375e43df0ebfabf514756c308e153f7381c513dfebb204ab28339",
+      "versao": 202611070747,
+      "bytes": 756988,
+      "sha256": "0b07f43415580046510171148fdfb11c9ac3e417f159f65a0c2918d7c3c52654",
       "bbox": [
         -23.363,
         -44.822,
@@ -278,9 +278,9 @@
       ]
     },
     "camadas/SP.json": {
-      "versao": 202611070526,
-      "bytes": 2454648,
-      "sha256": "4beabe6860c732ed72798a397b46468e9ff50961d08218184e30bbd58f267a99",
+      "versao": 202611070747,
+      "bytes": 2476462,
+      "sha256": "a403977fae18d5f77e0e63a02d2801b969ee6c1557232da88ba6f47111f9740e",
       "bbox": [
         -25.015,
         -53.057,
