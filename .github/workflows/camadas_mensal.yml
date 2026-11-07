@@ -2,14 +2,20 @@
 #
 # A TAREFA MENSAL das camadas do mapa (GitHub Actions).
 #
-# No dia 1 de cada mês, um computador do próprio GitHub (Ubuntu) baixa este
-# repositório, roda os testes, gera os 27 estados com o
+# Uma REGIÃO por dia, nos dias 1 a 5 de cada mês, às 06:17 de Brasília:
+#   dia 1 Nordeste · dia 2 Norte · dia 3 Centro-Oeste · dia 4 Sudeste · dia 5 Sul
+# Por que dividir: no GitHub cada consulta ao Overpass leva uns 30 a 40 s
+# (o computador do GitHub divide o endereço de internet com muita gente), e
+# os 27 estados de uma vez passariam do limite de tempo da tarefa.
+#
+# Em cada rodada, um computador do próprio GitHub (Ubuntu) baixa este
+# repositório, roda os testes, gera os estados da região com o
 # scripts/gerar_camadas.py, atualiza o indice.json e, se algo mudou, faz o
-# commit e o push sozinho. O GitHub Pages publica em seguida, como quando o
-# push vem do seu computador.
+# commit e o push sozinho. O GitHub Pages publica em seguida.
 #
 # Também dá para rodar na hora, pelo botão "Run workflow" na aba Actions,
-# escolhendo só alguns estados (para refazer os que falharam, por exemplo).
+# escolhendo a região ou digitando só alguns estados (para refazer os que
+# falharam, por exemplo).
 #
 # Se algum estado falhar, os que deram certo são publicados assim mesmo, os
 # que falharam continuam com a versão anterior, e a tarefa termina marcada
@@ -21,14 +27,23 @@ name: Camadas mensais
 
 on:
   schedule:
-    # Dia 1 de cada mês, às 09:17 UTC (06:17 em Brasília). O minuto
-    # "quebrado" foge da hora cheia, quando o GitHub atrasa mais as
-    # tarefas agendadas.
-    - cron: "17 9 1 * *"
+    # Os textos abaixo precisam ser IGUAIS aos do passo "Gerar as camadas"
+    # (é por eles que a tarefa sabe qual região é a do dia). O minuto
+    # "quebrado" foge da hora cheia, quando o GitHub atrasa mais as tarefas.
+    - cron: "17 9 1 * *"   # Nordeste
+    - cron: "17 9 2 * *"   # Norte
+    - cron: "17 9 3 * *"   # Centro-Oeste
+    - cron: "17 9 4 * *"   # Sudeste
+    - cron: "17 9 5 * *"   # Sul
   workflow_dispatch:
     inputs:
+      regiao:
+        description: "Região"
+        type: choice
+        options: [nordeste, norte, centro-oeste, sudeste, sul]
+        default: nordeste
       estados:
-        description: "Siglas separadas por espaço (ex.: BA SP). Vazio = os 27."
+        description: "Ou só estes estados, separados por espaço (ex.: BA SP). Se preencher, a região é ignorada."
         required: false
         default: ""
       forcar:
@@ -49,9 +64,9 @@ concurrency:
 jobs:
   camadas:
     runs-on: ubuntu-latest
-    # Os 27 estados levam por volta de 2 horas (o script espera a vaga no
-    # servidor entre as consultas). 5 horas é a folga antes de desistir.
-    timeout-minutes: 300
+    # A região mais demorada (Nordeste, 9 estados) leva perto de 1h30.
+    # 3 horas é a folga antes de desistir.
+    timeout-minutes: 180
     steps:
       - name: Baixar o repositório
         uses: actions/checkout@v6
@@ -68,12 +83,23 @@ jobs:
         id: gerar
         continue-on-error: true
         env:
+          AGENDA: ${{ github.event.schedule }}
+          REGIAO_ESCOLHIDA: ${{ inputs.regiao }}
           ESTADOS: ${{ inputs.estados }}
           FORCAR: ${{ inputs.forcar }}
         run: |
-          if [ -z "$ESTADOS" ]; then ALVO="--todos"; else ALVO="$ESTADOS"; fi
+          case "$AGENDA" in
+            "17 9 1 * *") REGIAO=nordeste ;;
+            "17 9 2 * *") REGIAO=norte ;;
+            "17 9 3 * *") REGIAO=centro-oeste ;;
+            "17 9 4 * *") REGIAO=sudeste ;;
+            "17 9 5 * *") REGIAO=sul ;;
+            *) REGIAO="$REGIAO_ESCOLHIDA" ;;
+          esac
+          if [ -n "$ESTADOS" ]; then ALVO="$ESTADOS"; else ALVO="--regiao $REGIAO"; fi
           EXTRA=""
           if [ "$FORCAR" = "true" ]; then EXTRA="--forcar"; fi
+          echo "Rodando: $ALVO $EXTRA"
           python3 scripts/gerar_camadas.py $ALVO $EXTRA
 
       - name: Atualizar o índice

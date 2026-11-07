@@ -18,6 +18,7 @@ Uso (sempre a partir da raiz do repositório):
 
     python3 scripts/gerar_camadas.py PE            # só Pernambuco
     python3 scripts/gerar_camadas.py PE PB RN      # alguns estados
+    python3 scripts/gerar_camadas.py --regiao sul  # uma região (ver REGIOES)
     python3 scripts/gerar_camadas.py --todos       # os 27
     python3 scripts/gerar_camadas.py PE --forcar   # grava mesmo com queda grande
 
@@ -25,8 +26,8 @@ Depois de gerar, rode o scripts/atualizar_indice.py, que atualiza o
 indice.json (o que o app lê para saber o que mudou).
 
 Só usa a biblioteca padrão do Python (nada de pip install): roda igual no
-Fedora e no computador do GitHub (GitHub Actions), quando a tarefa mensal for
-ligada.
+Fedora e no computador do GitHub (a tarefa mensal do GitHub Actions, que
+roda uma região por dia, nos dias 1 a 5 de cada mês).
 """
 
 from __future__ import annotations
@@ -60,6 +61,19 @@ UFS = [
     "SP", "SE", "TO",
 ]
 
+# Os estados de cada região. A tarefa mensal do GitHub roda UMA região por
+# dia (dias 1 a 5): os 27 de uma vez passariam do limite de tempo dela, já
+# que no GitHub cada consulta leva uns 30 a 40 s (o computador do GitHub
+# divide o endereço de internet com muita gente). O teste confere que cada
+# estado está em exatamente uma região.
+REGIOES = {
+    "nordeste": ["AL", "BA", "CE", "MA", "PB", "PE", "PI", "RN", "SE"],
+    "norte": ["AC", "AM", "AP", "PA", "RO", "RR", "TO"],
+    "centro-oeste": ["DF", "GO", "MS", "MT"],
+    "sudeste": ["ES", "MG", "RJ", "SP"],
+    "sul": ["PR", "RS", "SC"],
+}
+
 # Os servidores, em ordem: os dois que o app usa e um terceiro de reserva.
 # O maps.mail.ru cobre o mundo todo e costuma ficar só cerca de 1 minuto
 # atrás do OpenStreetMap ao vivo. Todos são públicos e comunitários.
@@ -92,6 +106,10 @@ VOLTAS = 2
 ESPERA_ENTRE_VOLTAS = 60
 # A espera máxima por uma vaga (se o servidor pedir mais, tenta assim mesmo).
 ESPERA_MAXIMA_VAGA = 120
+# Quanto tempo esperar a página de vagas (/api/status) responder. Ela é
+# rápida quando funciona; no GitHub, às vezes ela não responde, e esperar
+# 15 s em toda consulta somava muitos minutos à toa.
+TEMPO_STATUS = 5
 
 # A TRAVA contra resposta pela metade: se uma camada vier com mais de 30% a
 # menos do que na versão anterior, o estado não é gravado (a não ser com
@@ -331,7 +349,7 @@ def esperar_vaga(endereco: str) -> None:
     status = endereco.replace("/interpreter", "/status")
     try:
         pedido = urllib.request.Request(status, headers={"User-Agent": IDENTIFICACAO})
-        with urllib.request.urlopen(pedido, timeout=15) as r:
+        with urllib.request.urlopen(pedido, timeout=TEMPO_STATUS) as r:
             texto_status = r.read().decode("utf-8", "replace")
     except (urllib.error.URLError, TimeoutError, OSError):
         return
@@ -632,16 +650,23 @@ def principal(argumentos: list[str] | None = None) -> int:
     leitor = argparse.ArgumentParser(
         description="Gera camadas/UF.json a partir do OpenStreetMap.")
     leitor.add_argument("ufs", nargs="*", help="siglas dos estados (ex.: PE PB)")
+    leitor.add_argument("--regiao", choices=sorted(REGIOES),
+                        help="os estados de uma região")
     leitor.add_argument("--todos", action="store_true", help="os 27 estados")
     leitor.add_argument("--forcar", action="store_true",
                         help="grava mesmo se a trava apontar queda grande")
     args = leitor.parse_args(argumentos)
 
-    ufs = UFS if args.todos else [u.upper() for u in args.ufs]
+    if args.todos:
+        ufs = UFS
+    elif args.regiao:
+        ufs = REGIOES[args.regiao]
+    else:
+        ufs = [u.upper() for u in args.ufs]
     invalidas = [u for u in ufs if u not in UFS]
     if not ufs or invalidas:
         leitor.error(f"estados inválidos: {invalidas}" if invalidas
-                     else "diga os estados (ex.: PE) ou use --todos")
+                     else "diga os estados (ex.: PE), uma --regiao ou --todos")
 
     # Se alguém (ou o sistema) mandar o script parar, avisa direito em vez de
     # sumir com "Terminado". Os estados já gravados continuam inteiros: a

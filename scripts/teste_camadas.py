@@ -133,6 +133,19 @@ class TesteResposta(unittest.TestCase):
         self.assertIn('["name"~"borrach",i](area.uf);', consulta)
 
 
+class TesteRegioes(unittest.TestCase):
+
+    def test_cada_estado_em_uma_regiao(self):
+        todos = [uf for ufs in g.REGIOES.values() for uf in ufs]
+        self.assertEqual(sorted(todos), sorted(g.UFS))  # nenhum faltando ou repetido
+
+    def test_linha_de_comando_com_regiao(self):
+        with mock.patch.object(g, "gerar_uf", return_value=True) as gerar, \
+                mock.patch.object(g.time, "sleep"):
+            self.assertEqual(g.principal(["--regiao", "sul"]), 0)
+        self.assertEqual([c.args[0] for c in gerar.call_args_list], ["PR", "RS", "SC"])
+
+
 class TesteServidor(unittest.TestCase):
     """O download, com a internet trocada por respostas falsas."""
 
